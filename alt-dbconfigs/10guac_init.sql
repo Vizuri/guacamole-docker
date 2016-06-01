@@ -1,0 +1,1 @@
+-- This file to be over-written by the gaucamole table generation script.  Just here as a place holder.

@@ -1,0 +1,30 @@
+version: '2'
+
+services:
+#  Would have used this, but no good way to ensure the order.  Just doesn't fit the model.
+#   config:
+#     image: ${LOCAL_REG}/guacamole
+#     volumes:
+#       - guac_dbconfig:/var/guacconfig
+#     command: bash -c '/opt/guacamole/bin/initdb.sh --postgres >/var/guacconfig/02-initdb.sql; echo "create database guacamole_db;">01-initdb.sql'
+#     container_name: guac_configure
+ 
+   database:
+     image: postgres
+     volumes_from: 
+       - container:config
+     container_name: postgres
+     environment:
+      - "constraint:com.vizuri.use==database"
+
+   gaucamole:
+     image: ${LOCAL_REG}/guacamole
+     ports: 
+      - '8080:8080'
+     environment:
+      - POSTGRES_USER=guac
+      - POSTGRES_DATABASE=guacamole
+      - POSTGRES_PASSWORD=C34CA980-F949-4CE9-ACB6-3C619F95EA5C
+
+   # create database guacamole_db;
+   # 
