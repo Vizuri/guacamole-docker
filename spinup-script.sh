@@ -4,7 +4,7 @@
 
 USAGE=' -d (debug); -n <num instances> (size of swarm [also size of guac cluster]); -t <target> (cloud to spin up on (def. vmwarefusion))'
 
-DRIVER=vmwarefusion
+CLOUD=vmwarefusion
 typeset -i NODE_COUNT=3
 unset LOCAL_REG
 
@@ -16,7 +16,11 @@ do
   'n') NODE_COUNT=$OPTARG
   ;;
   't') # not implementing this yet
-    if [[ $OPTARG != 'vmwarefustion' ]] ; then echo 'Only works local at this  point.'; exit 1; fi
+    if [[ $OPTARG != 'vmwarefusion' && $OPTARG != 'aws' ]] ; then 
+       echo 'Invalid or unsupported cloud provider specified.'
+       exit 1
+    fi
+    CLOUD="$OPTARG"
   ;;
   '?') echo 'Unknown option provided.'
        echo "$USAGE"
@@ -24,6 +28,48 @@ do
   ;;
   esac
 done
+
+# function to allow a central place to set configuration options on 
+#  the docker-machine command line.  Expected to be executed in 
+#  subshell expression $()
+function set_cloud_opts() {
+	case $CLOUD in
+    vmwarefusion)
+			echo --driver vmwarefusion
+			# We set no vmware specific options at this time.
+		;;
+    aws)
+		echo --driver amazonec2
+		echo --amazonec2-ssh-keypath docker-training-guacamole-01 
+		echo --amazonec2-subnet-id subnet-6ae57b41 --amazonec2-vpc-id vpc-6825250d 
+		echo --amazonec2-zone a --amazonec2-region us-east-1 
+		echo --amazonec2-monitoring
+		echo --amazonec2-tags Name,guacamole,Role,$1
+		# note on security groups:
+		#  * guacamole-cluster - holds the swarm nodes
+		#  * guac-infrastructure - used for the group machine, no access from outside (except for machine of course), but access from the swarm nodes on 5000 (guacamole-cluster)
+		case $1 in 
+			infrastructure)
+				echo --amazonec2-security-group guac-infrastructure
+			;;
+			swmaster | swarm*)
+				echo --amazonec2-security-group guacamole-cluster
+			;;
+		esac
+		;;
+       \*) 
+			echo 'Unknown cloud -- unexpected request to configure options'
+			exit 1;
+		;;
+	esac
+  # The last item is the name of the instance; this lets us replace the name with all of the configs w/o complicating the command line or introducing redundancy.
+  echo $1
+return 0
+# expected options: $1 == machine name (indicates the role)
+# global vars: CLOUD  - details what type of cloud we are using
+# retuns: nothing, but provides a list of options on stdout. If passed 
+#  an unknown host, terminated the program with a message.
+}
 
 # function to pull images from Docker HUB into our local registry
 function pull_to_local() {
@@ -39,7 +85,7 @@ function pull_to_local() {
 
 # Spin up the infrastructure system.. This is used to run the consul system and 
 #  registry.  It's not part of the swarm, just a supporting player.
-docker-machine create -d $DRIVER infrastructure  && \
+docker-machine create $(set_cloud_opts infrastructure) && \
    eval $(docker-machine env infrastructure) && \
    docker run --name consul -h consul --restart=always -p 8400:8400 -p 8500:8500 \
      -p 53:53/udp -d progrium/consul -server -bootstrap-expect 1 -ui-dir /ui && \
@@ -62,13 +108,13 @@ export LOCAL_REG="${INF_SERVER}:5000"
 # Spin up the swarm master.  This system is also a working node, so it could be the
 #   only system in the cluster in a small setup. In our case we also add a label to 
 #   use this system to run the shared database.
-docker-machine create -d $DRIVER --swarm --swarm-master \
+docker-machine create --swarm --swarm-master \
   --swarm-discovery="$CONSUL_ACCESS" \
   --swarm-image="$LOCAL_REG/swarm" \
   --engine-opt="cluster-store=$CONSUL_ACCESS" \
   --engine-opt="label com.vizuri.use=database" \
   --engine-opt="insecure-registry=$LOCAL_REG" \
-  --engine-opt="cluster-advertise=eth0:2376" swmaster
+  --engine-opt="cluster-advertise=eth0:2376" $(set_cloud_opts swmaster)
 
 if (( $? == 0 )); then
   echo 'Swarm master node is up.'
@@ -85,13 +131,13 @@ pull_to_local glyptodon/guacamole glyptodon/guacd &
 # Spin up all additional worker nodes.
 for ((NODE=NODE_COUNT-1; NODE > 0; NODE--))
 do
- docker-machine create -d $DRIVER --swarm \
+ docker-machine create --swarm \
   --swarm-discovery="$CONSUL_ACCESS" \
   --swarm-image="$LOCAL_REG/swarm" \
   --engine-opt="cluster-store=$CONSUL_ACCESS" \
   --engine-opt='cluster-advertise=eth0:2376' \
   --engine-opt="insecure-registry=$LOCAL_REG" \
-   "swnode$NODE" &
+   $(set_cloud_opts "swnode$NODE") &
   NODES="$NODES swnode$NODE"
 done
 
@@ -134,6 +180,6 @@ done
 #  listen on the same port and so is compatable with ELB.
 
 echo 'Guacamole endpoints:'
-docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoints: tcp://@'
+docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoints: http://@'
 
 
