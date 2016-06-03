@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#set -x 
-
-USAGE=' -d (debug); -n <num instances> (size of swarm [also size of guac cluster]); -t <target> (cloud to spin up on (def. vmwarefusion))'
+USAGE='  -d (debug)
+  -n <num instances> (size of swarm [also size of guac cluster])
+  -t <target>[:<profile>] (cloud to spin up on, with optional profile indicated (def. vmwarefusion))'
 
 CLOUD=vmwarefusion
 typeset -i NODE_COUNT=3
@@ -15,9 +15,9 @@ do
   ;;
   'n') NODE_COUNT=$OPTARG
   ;;
-  't') # not implementing this yet
-    if [[ $OPTARG != 'vmwarefusion' && $OPTARG != 'aws' ]] ; then 
-       echo 'Invalid or unsupported cloud provider specified.'
+  't') 
+    if [[ $OPTARG != 'vmwarefusion' && $OPTARG != aws* ]] ; then 
+       echo 'Invalid or unsupported cloud provider specified:' "$OPTARG"
        exit 1
     fi
     CLOUD="$OPTARG"
@@ -29,22 +29,80 @@ do
   esac
 done
 
+
+# +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
+# function to pull the credencial out of a specif profile in order to use them with 
+# the docker-machine command and the aws driver
+# paramters: $1 is the name of the cloud profile requested
+# globals: sets the VIZ_AWS_* variables for later use by other routines
+function set_aws_creds() {
+local instanza=0 line
+	while read line
+	do
+		if (( ! $instanza )); then
+			if [[ $line == "[profile $1]" ]]; then
+				instanza=1
+			fi
+			continue
+		else
+			case $line in
+				aws_access_key_id=*)
+					#export AWS_ACCESS_KEY_ID="${line#*=}"
+					VIZ_AWS_ACCES_KEY_ID="${line#*=}"
+					;;
+				aws_secret_access_key=*)
+					#export AWS_SECRET_ACCESS_KEY="${line#*=}"
+					VIZ_AWS_SECRET_ACCESS_KEY="${line#*=}"
+					;;
+				region\ =*)
+					VIZ_AWS_REGION="${line#* = }"
+					;;
+				'['*) # indicates end of stanza, so end of processing
+					break
+					;;
+			esac
+		fi
+	done <~/.aws/config
+}
+
+
+# +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
 # function to allow a central place to set configuration options on 
 #  the docker-machine command line.  Expected to be executed in 
 #  subshell expression $()
+#
+# expected options: $1 == machine name (indicates the role)
+# global vars: CLOUD  - details what type of cloud we are using
+# retuns: nothing, but provides a list of options on stdout. If passed 
+#  an unknown host, terminated the program with a message.
 function set_cloud_opts() {
 	case $CLOUD in
     vmwarefusion)
 			echo --driver vmwarefusion
-			# We set no vmware specific options at this time.
+			# We set no vmware specific options at this time. Some instance sizing might be reasonable if we ever tune things.
 		;;
-    aws)
+    aws | aws:*)
+      if [[ $CLOUD == aws:* ]] ; then
+			set_aws_creds "${CLOUD#*:}"
+		fi
+
 		echo --driver amazonec2
-		echo --amazonec2-ssh-keypath docker-training-guacamole-01 
+		#echo --amazonec2-ssh-keypath ~/.ssh/docker-training-guacamole-01.pem
 		echo --amazonec2-subnet-id subnet-6ae57b41 --amazonec2-vpc-id vpc-6825250d 
-		echo --amazonec2-zone a --amazonec2-region us-east-1 
+		echo --amazonec2-zone a 
 		echo --amazonec2-monitoring
 		echo --amazonec2-tags Name,guacamole,Role,$1
+		if [[ $VIZ_AWS_ACCES_KEY_ID ]] ; then
+			echo --amazonec2-access-key $VIZ_AWS_ACCES_KEY_ID
+		fi
+		if [[ $VIZ_AWS_SECRET_ACCESS_KEY ]] ; then
+			echo --amazonec2-secret-key $VIZ_AWS_SECRET_ACCESS_KEY 
+		fi
+		if [[ $VIZ_AWS_REGION ]]; then
+			echo --amazonec2-region $VIZ_AWS_REGION
+		fi
+
+
 		# note on security groups:
 		#  * guacamole-cluster - holds the swarm nodes
 		#  * guac-infrastructure - used for the group machine, no access from outside (except for machine of course), but access from the swarm nodes on 5000 (guacamole-cluster)
@@ -65,13 +123,12 @@ function set_cloud_opts() {
   # The last item is the name of the instance; this lets us replace the name with all of the configs w/o complicating the command line or introducing redundancy.
   echo $1
 return 0
-# expected options: $1 == machine name (indicates the role)
-# global vars: CLOUD  - details what type of cloud we are using
-# retuns: nothing, but provides a list of options on stdout. If passed 
-#  an unknown host, terminated the program with a message.
 }
 
+# +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
 # function to pull images from Docker HUB into our local registry
+# paramters: list of images to pull
+# globals: looks for the LOCAL_REG, defining the registry to push to
 function pull_to_local() {
  local IMAGE NEWTAG
  for IMAGE 
@@ -83,6 +140,9 @@ function pull_to_local() {
  done
  }
 
+# +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
+# START MAINLINE
+#
 # Spin up the infrastructure system.. This is used to run the consul system and 
 #  registry.  It's not part of the swarm, just a supporting player.
 docker-machine create $(set_cloud_opts infrastructure) && \
