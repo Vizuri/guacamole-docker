@@ -1,6 +1,6 @@
 #!/bin/bash
 
-USAGE='  -d (debug)
+USAGE='  -[d|D] (script debug|full debug inc. docker-machine) 
   -n <num instances> (size of swarm [also size of guac cluster])
   -t <target>[:<profile>] (cloud to spin up on, with optional profile indicated (def. vmwarefusion))'
 
@@ -8,25 +8,29 @@ CLOUD=vmwarefusion
 typeset -i NODE_COUNT=3
 unset LOCAL_REG
 
-while getopts dn:t: flag
+while getopts dDn:t: flag
 do
-  case $flag in
-  'd') set -x
-  ;;
-  'n') NODE_COUNT=$OPTARG
-  ;;
-  't') 
-    if [[ $OPTARG != 'vmwarefusion' && $OPTARG != aws* ]] ; then 
-       echo 'Invalid or unsupported cloud provider specified:' "$OPTARG"
-       exit 1
-    fi
-    CLOUD="$OPTARG"
-  ;;
-  '?') echo 'Unknown option provided.'
-       echo "$USAGE"
-       exit 1
-  ;;
-  esac
+	case $flag in
+	'd') set -x
+	;;
+	'D') 
+		set -x
+		export MACHINE_DEBUG=1
+	;;
+	'n') NODE_COUNT=$OPTARG
+	;;
+	't') 
+		if [[ $OPTARG != 'vmwarefusion' && $OPTARG != aws* ]] ; then 
+			echo 'Invalid or unsupported cloud provider specified:' "$OPTARG"
+			exit 1
+		fi
+		CLOUD="$OPTARG"
+	;;
+	'?') echo 'Unknown option provided.'
+		echo "$USAGE"
+		exit 1
+	;;
+	esac
 done
 
 
@@ -88,7 +92,7 @@ function set_cloud_opts() {
 
 		echo --driver amazonec2
 		#echo --amazonec2-ssh-keypath ~/.ssh/docker-training-guacamole-01.pem
-		echo --amazonec2-subnet-id subnet-6ae57b41 --amazonec2-vpc-id vpc-6825250d 
+		echo --amazonec2-subnet-id subnet-6ae57b41 --amazonec2-vpc-id vpc-6825250d
 		echo --amazonec2-zone a 
 		echo --amazonec2-monitoring
 		echo --amazonec2-tags Name,guacamole,Role,$1
