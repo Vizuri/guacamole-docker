@@ -114,7 +114,7 @@ function set_cloud_opts() {
 			infrastructure)
 				echo --amazonec2-security-group guac-infrastructure
 			;;
-			swmaster | swarm*)
+			swmaster | swnode*)
 				echo --amazonec2-security-group guacamole-cluster
 			;;
 		esac
@@ -152,8 +152,9 @@ function pull_to_local() {
 docker-machine create $(set_cloud_opts infrastructure) && \
    eval $(docker-machine env infrastructure) && \
    docker run --name consul -h consul --restart=always -p 8400:8400 -p 8500:8500 \
-     -p 53:53/udp -d progrium/consul -server -bootstrap-expect 1 -ui-dir /ui && \
+     -d progrium/consul -server -bootstrap-expect 1 -ui-dir /ui && \
    docker run -d --restart=always -p 5000:5000 registry:2
+# EGN - temp removed the DNS port publish from consul since Ubuntu has some dnsmasq process in place causing collision: -p 53:53/udp 
 
 if (( $? == 0 )); then
   echo 'Infrastructure node is up.'
@@ -166,6 +167,12 @@ pull_to_local swarm
 
 # these are the values that are needed in order to bring the swarm elements together
 INF_SERVER=$(docker-machine ip infrastructure)
+if [[ $CLOUD == aws* ]] ; then
+	# Important note: AWS ACLs dictate that you use the hostname! That's why we change the operation for AWS. Also
+	# note that we need to strip the training dot form the hostname because nobody in the world knows how to
+	# properly handle hostnames.
+	INF_SERVER=$(dig -x $INF_SERVER | awk '/^[^;]/{print substr($5,1,length($5)-1); exit;}' )
+fi
 CONSUL_ACCESS="consul://${INF_SERVER}:8500"
 export LOCAL_REG="${INF_SERVER}:5000"
 
@@ -179,6 +186,7 @@ docker-machine create --swarm --swarm-master \
   --engine-opt="label com.vizuri.use=database" \
   --engine-opt="insecure-registry=$LOCAL_REG" \
   --engine-opt="cluster-advertise=eth0:2376" $(set_cloud_opts swmaster)
+  NODES='swmaster'
 
 if (( $? == 0 )); then
   echo 'Swarm master node is up.'
@@ -212,7 +220,7 @@ wait
 eval $(docker-machine env --swarm swmaster)
 
 # Define overlay network for back end communication.
-docker network create --driver overlay --subnet 10.0.1.0/24 guacnet
+docker network create --driver overlay --subnet 10.0.1.0/24 guacnet || { echo 'Unable to interact with the swarm'; exit 1; }
 
 # Build configuration in a volume; this will be passed to the database container for inital setup.
 docker run --name config -v guac_dbconfig:/docker-entrypoint-initdb.d -e 'constraint:com.vizuri.use==database' \
@@ -220,10 +228,10 @@ docker run --name config -v guac_dbconfig:/docker-entrypoint-initdb.d -e 'constr
 (cd dbconfigs && docker cp . config:/docker-entrypoint-initdb.d)
 
 # Spin up database container for shared configuration and authentication
-docker run -d --name postgres --volumes-from config --net guacnet postgres 
+docker run -d --name postgres --volumes-from config --net guacnet --restart=always postgres 
 
-docker pull ${LOCAL_REG}/guacd
-docker pull ${LOCAL_REG}/guacamole
+#docker pull ${LOCAL_REG}/guacd
+#docker pull ${LOCAL_REG}/guacamole
 
 # We give the DB a short time to settle.  Not sure this is needed, could put in a socket test instead...
 sleep 20
@@ -232,18 +240,29 @@ sleep 20
 #  and guacamole containers have a one-to-one relationship.
 for ((i=NODE_COUNT; i>0; i--))
 do
- docker run --name guacd_$i -e ‘affinity:container!=/guacd_[0-9]+/’ -d ${LOCAL_REG}/guacd
+ docker run --name guacd_$i -e ‘affinity:container!=/guacd_[0-9]+/’ -d --restart=always ${LOCAL_REG}/guacd
 
  # Note: we set the GUACD_PORT... variables because the startup script is checking for an old style link (Docker legacy link).
  docker run -d -e affinty:container==guacd_$i --net guacnet -p 8080:8080 -e GUACD_PORT_4822_TCP_ADDR=guacd_$i -e GUACD_PORT_4822_TCP_PORT=4822 \
       -e POSTGRES_HOSTNAME=postgres -e POSTGRES_USER=guac -e POSTGRES_DATABASE=guacamole -e POSTGRES_PASSWORD=C34CA980-F949-4CE9-ACB6-3C619F95EA5C \
-      --name guacamole_$i ${LOCAL_REG}/guacamole
+      --name guacamole_$i --restart=always ${LOCAL_REG}/guacamole
 done
 
 # Register the instances with the load balancer here. Each spun up instance will 
 #  listen on the same port and so is compatable with ELB.
 
+echo '+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-'
+echo -e 'Guac cluster started\n'
 echo 'Guacamole endpoints:'
-docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoints: http://@'
+docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoint: http://@'
 
+echo -e '\nGuacamole instances:'
+for NODE in $NODES
+do
+	docker-machine inspect --format='{{ .Driver.InstanceId }}' $NODE
+done
+
+echo -e '\nFor DB access:'
+echo '1) eval $(docker-machine env --swarm swmaster)'
+echo '2) docker exec -it postgres psql -U postgres'
 
