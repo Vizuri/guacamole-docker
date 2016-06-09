@@ -256,11 +256,13 @@ echo -e 'Guac cluster started\n'
 echo 'Guacamole endpoints:'
 docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoint: http://@'
 
-echo -e '\nGuacamole instances:'
-for NODE in $NODES
-do
-	docker-machine inspect --format='{{ .Driver.InstanceId }}' $NODE
-done
+if [[ $CLOUD == aws* ]]; then
+	echo -e '\nGuacamole instances:'
+	for NODE in $NODES
+	do
+		docker-machine inspect --format='{{ .Driver.InstanceId }}' $NODE
+	done
+fi
 
 echo -e '\nFor DB access:'
 echo '1) eval $(docker-machine env --swarm swmaster)'
