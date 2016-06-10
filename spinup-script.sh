@@ -38,6 +38,16 @@ if [[ -z $CLOUD ]]; then
   exit 1
 fi
 
+function banner_output() {
+local COUNT TIME
+	tput bold
+	TIME=$SECONDS
+	printf '+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-( %d:%02d )+=-%n\n' $(( TIME / 60 )) $(( TIME % 60 )) COUNT
+   echo "$@"
+	printf "%.*s\n" $COUNT '+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-'
+	tput sgr0
+}
+
 # +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
 # function to pull the credencial out of a specif profile in order to use them with 
 # the docker-machine command and the aws driver
@@ -157,6 +167,7 @@ function pull_to_local() {
 #
 # Spin up the infrastructure system.. This is used to run the consul system and 
 #  registry.  It's not part of the swarm, just a supporting player.
+banner_output Starting the base infrastructure node
 docker-machine create $(set_cloud_opts infrastructure) && \
    eval $(docker-machine env infrastructure) && \
    docker run --name consul -h consul --restart=always -p 8400:8400 -p 8500:8500 \
@@ -187,6 +198,7 @@ export LOCAL_REG="${INF_SERVER}:5000"
 # Spin up the swarm master.  This system is also a working node, so it could be the
 #   only system in the cluster in a small setup. In our case we also add a label to 
 #   use this system to run the shared database.
+banner_output Starting the swarm master/first worker node
 docker-machine create --swarm --swarm-master \
   --swarm-discovery="$CONSUL_ACCESS" \
   --swarm-image="$LOCAL_REG/swarm" \
@@ -203,11 +215,13 @@ else
   exit 1
 fi
 
+banner_output Caching to local registry gucamole images
 # We use the swarm mster node to pull the additional images, since they can 
 #  be used here as well (master is also a worker in our case.)
 eval $(docker-machine env swmaster)
 pull_to_local glyptodon/guacamole glyptodon/guacd &
 
+banner_output Concurrently starting all remaining swarm worker nodes requested: $(( NODE_COUNT-1 ))
 # Spin up all additional worker nodes.
 for ((NODE=NODE_COUNT-1; NODE > 0; NODE--))
 do
@@ -230,6 +244,7 @@ eval $(docker-machine env --swarm swmaster)
 # Define overlay network for back end communication.
 docker network create --driver overlay --subnet 10.0.1.0/24 guacnet || { echo 'Unable to interact with the swarm'; exit 1; }
 
+banner_output Config and stand up of database
 # Build configuration in a volume; this will be passed to the database container for inital setup.
 docker run --name config -v guac_dbconfig:/docker-entrypoint-initdb.d -e 'constraint:com.vizuri.use==database' \
    ${LOCAL_REG}/guacamole bash -c '{ echo "\\c guacamole;"; /opt/guacamole/bin/initdb.sh --postgres; } >/docker-entrypoint-initdb.d/10guac_init.sql' 
@@ -244,6 +259,7 @@ docker run -d --name postgres --volumes-from config --net guacnet --restart=alwa
 # We give the DB a short time to settle.  Not sure this is needed, could put in a socket test instead...
 sleep 20
 
+banner_output Deploying containerized gaucamole infrastructure
 # Spin up a pair of containers per swarm host (we use affinity rules to keep them apart.) The guac 
 #  and guacamole containers have a one-to-one relationship.
 for ((i=NODE_COUNT; i>0; i--))
@@ -259,9 +275,9 @@ done
 # Register the instances with the load balancer here. Each spun up instance will 
 #  listen on the same port and so is compatable with ELB.
 
-echo '+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-+=-'
-echo -e 'Guac cluster started\n'
-echo 'Guacamole endpoints:'
+banner_output Deployment complete
+
+echo -e '\nGuacamole endpoints:'
 docker ps --filter name=guacamole_\? -q | xargs -I {} docker port {} 8080 | sed -e 's@^@endpoint: http://@'
 
 if [[ $CLOUD == aws* ]]; then
