@@ -2,9 +2,8 @@
 
 USAGE='  -[d|D] (script debug|full debug inc. docker-machine) 
   -n <num instances> (size of swarm [also size of guac cluster])
-  -t <target>[:<profile>] (cloud to spin up on, with optional profile indicated (def. vmwarefusion))'
+  -t <target>[:<profile>] (cloud to spin up on, with optional profile indicated'
 
-CLOUD=vmwarefusion
 typeset -i NODE_COUNT=3
 unset LOCAL_REG
 
@@ -20,7 +19,7 @@ do
 	'n') NODE_COUNT=$OPTARG
 	;;
 	't') 
-		if [[ $OPTARG != 'vmwarefusion' && $OPTARG != aws* ]] ; then 
+		if [[ $OPTARG != virtualbox && $OPTARG != vmwarefusion && $OPTARG != aws* ]] ; then 
 			echo 'Invalid or unsupported cloud provider specified:' "$OPTARG"
 			exit 1
 		fi
@@ -33,6 +32,11 @@ do
 	esac
 done
 
+if [[ -z $CLOUD ]]; then 
+  echo 'The target argument is required (-t).'
+  echo "$USAGE"
+  exit 1
+fi
 
 # +=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~+=~
 # function to pull the credencial out of a specif profile in order to use them with 
@@ -81,6 +85,10 @@ local instanza=0 line
 #  an unknown host, terminated the program with a message.
 function set_cloud_opts() {
 	case $CLOUD in
+    virtualbox)
+			echo --driver virtualbox
+			# We set no virtualbox specific options at this time. Some instance sizing might be reasonable if we ever tune things.
+		;;
     vmwarefusion)
 			echo --driver vmwarefusion
 			# We set no vmware specific options at this time. Some instance sizing might be reasonable if we ever tune things.
